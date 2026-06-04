@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-import datetime as dt
 import json
 import os
 import shutil
 import subprocess
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Optional
 
@@ -16,6 +15,8 @@ from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 from rich.console import Console
 from rich.table import Table
+
+from .memory import AdvancedProjectMemory
 
 app = typer.Typer(help="Game Dev Harness BYOK: long-form AI agent harness for game/app projects.")
 console = Console()
@@ -39,6 +40,13 @@ class HarnessConfig(BaseModel):
     project_name: str = "Untitled Game"
     engine_profile: str = "generic"
     memory_token_budget: int = 18000
+    auto_compress_memory: bool = True
+    compression_trigger_chars: int = 140000
+    compression_keep_recent_runs: int = 8
+    retrieval_max_chunks: int = 10
+    recent_run_context_count: int = 3
+    hallucination_audit: bool = True
+    strict_grounding: bool = True
 
 
 @dataclass(slots=True)
@@ -50,41 +58,51 @@ class AgentRole:
 
 
 CORE_ROLES: dict[str, AgentRole] = {
-    "director": AgentRole("Director", "Own the complete product vision and keep the swarm aligned.", ["Convert vague prompts into milestones.", "Reject scope that breaks the current milestone.", "Merge sub-agent outputs into one executable plan."]),
-    "producer": AgentRole("Producer", "Break long projects into safe, testable work packages.", ["Maintain milestone plan and acceptance criteria.", "Detect blockers early.", "Keep work small enough to validate."]),
-    "designer": AgentRole("Game Designer", "Design mechanics, loops, economy, onboarding, progression, and player experience.", ["Write implementable design specs.", "Prefer prototype-first design.", "Create balancing assumptions."]),
-    "architect": AgentRole("Technical Architect", "Choose structure, data models, engine patterns, and maintainability rules.", ["Prevent fragile one-off scripts.", "Define module boundaries.", "Track Windows portability."]),
-    "engineer": AgentRole("Gameplay Engineer", "Implement gameplay, tools, UI, and automation in small tested increments.", ["Write rollback-aware patches.", "Respect engine conventions.", "Add checks where practical."]),
-    "engine-specialist": AgentRole("Engine Specialist", "Handle GBA/devkitPro, Unity, Unreal, web, or desktop workflows.", ["Map tasks to build commands.", "Warn when installs are required.", "Keep generated files engine-compatible."]),
-    "qa": AgentRole("QA Analyst", "Find defects before they grow into project debt.", ["Write test plans.", "Summarize failures.", "Define acceptance tests."]),
-    "build": AgentRole("Build Engineer", "Make local builds repeatable on Windows 11.", ["Manage scripts and artifacts.", "Document prerequisites.", "Prefer deterministic commands."]),
+    "director": AgentRole("Director", "Own product vision and align the swarm.", ["Convert vague prompts into milestones.", "Reject scope that breaks the milestone.", "Separate confirmed memory from assumptions."]),
+    "producer": AgentRole("Producer", "Break long projects into safe work packages.", ["Maintain milestone plan and acceptance criteria.", "Detect blockers early.", "Keep stale tasks from resurfacing."]),
+    "designer": AgentRole("Game Designer", "Design mechanics, loops, economy, onboarding, progression, and player experience.", ["Write implementable design specs.", "Prefer prototype-first design.", "Mark canon, placeholders, and experiments separately."]),
+    "architect": AgentRole("Technical Architect", "Choose structure, data models, engine patterns, and maintainability rules.", ["Prevent fragile one-off scripts.", "Define module boundaries.", "Detect contradictions against prior decisions."]),
+    "engineer": AgentRole("Gameplay Engineer", "Implement gameplay, tools, UI, and automation in small tested increments.", ["Write rollback-aware patches.", "Respect engine conventions.", "Never claim files changed unless the plan changes them."]),
+    "engine-specialist": AgentRole("Engine Specialist", "Handle GBA/devkitPro, Unity, Unreal, web, or desktop workflows.", ["Map tasks to build commands.", "Warn when installs are required.", "Separate installed-tool facts from assumptions."]),
+    "qa": AgentRole("QA Analyst", "Find defects before they grow into project debt.", ["Write test plans.", "Define acceptance tests.", "Call out hallucinated success and unverifiable claims."]),
+    "build": AgentRole("Build Engineer", "Make local builds repeatable on Windows 11.", ["Manage scripts and artifacts.", "Document prerequisites.", "Do not assume SDKs exist unless doctor/memory confirms them."]),
     "ux": AgentRole("UX/UI Artist", "Create usable interfaces and production-friendly art direction prompts.", ["Define screens and HUD rules.", "Create asset briefs.", "Track placeholder versus final art."]),
-    "researcher": AgentRole("Researcher", "Collect project-specific facts and docs before risky implementation.", ["Summarize engine docs.", "Avoid copying licensed content.", "Record sources in memory."]),
+    "researcher": AgentRole("Researcher", "Collect project-specific facts before risky implementation.", ["Summarize engine docs.", "Avoid copying licensed content.", "Label every uncertain claim."]),
+    "memory-auditor": AgentRole("Memory Auditor", "Protect the project from context-loss, contradictions, and hallucinations.", ["Compare output against anchors, pinned facts, decisions, and constraints.", "Identify unsupported claims.", "Suggest durable memory updates."]),
 }
 
 
 def roles_for_swarm(name: str) -> list[AgentRole]:
     swarms = {
         "minimal": ["director", "architect", "engineer", "qa"],
-        "gba": ["director", "producer", "designer", "architect", "engine-specialist", "engineer", "qa", "build"],
-        "research-heavy": ["director", "researcher", "producer", "architect", "engine-specialist", "qa"],
-        "studio": ["director", "producer", "designer", "architect", "engine-specialist", "engineer", "ux", "qa", "build"],
+        "gba": ["director", "producer", "designer", "architect", "engine-specialist", "engineer", "qa", "build", "memory-auditor"],
+        "research-heavy": ["director", "researcher", "producer", "architect", "engine-specialist", "qa", "memory-auditor"],
+        "studio": ["director", "producer", "designer", "architect", "engine-specialist", "engineer", "ux", "qa", "build", "memory-auditor"],
     }
     return [CORE_ROLES[k] for k in swarms.get(name, swarms["studio"])]
 
 
-def role_prompt(role: AgentRole, engine_profile: str) -> str:
-    resp = "\n".join(f"- {r}" for r in role.responsibilities)
+def role_prompt(role: AgentRole, engine_profile: str, strict: bool = True) -> str:
+    rules = "\n".join(f"- {r}" for r in role.responsibilities)
+    grounding = """- Use the Grounded Context Bundle as the source of truth.
+- Label anything not present in the user request, workspace files, or memory as ASSUMPTION.
+- Do not invent completed work, installed tools, file contents, assets, APIs, or user preferences.
+- Flag contradictions against anchors, pinned facts, decisions, and constraints.""" if strict else "- Prefer grounded answers and clearly label uncertainty."
     return f"""You are the {role.name} in Game Dev Harness BYOK.
 Mission: {role.mission}
 Engine profile: {engine_profile}
-Responsibilities:\n{resp}
+Responsibilities:
+{rules}
+
 Hard rules:
 - Assume the user may have no design or coding skills.
 - Make outputs actionable for Windows 11.
-- For huge projects, create durable plans, acceptance criteria, and checkpoints.
+- Split huge projects into durable milestones, acceptance criteria, and checkpoints.
 - Never pretend external tools are installed.
 - Do not copy copyrighted assets, game content, or proprietary code.
+
+Grounding rules:
+{grounding}
 """
 
 
@@ -92,10 +110,7 @@ def load_config(project_dir: Path) -> HarnessConfig:
     load_dotenv()
     load_dotenv(project_dir / ".env")
     path = project_dir / ".harness" / "config.json"
-    if path.exists():
-        cfg = HarnessConfig.model_validate(json.loads(path.read_text(encoding="utf-8")))
-    else:
-        cfg = HarnessConfig()
+    cfg = HarnessConfig.model_validate(json.loads(path.read_text(encoding="utf-8"))) if path.exists() else HarnessConfig()
     cfg.provider.base_url = os.getenv("GDH_BASE_URL", cfg.provider.base_url).rstrip("/")
     cfg.provider.model = os.getenv("GDH_MODEL", cfg.provider.model)
     cfg.provider.fast_model = os.getenv("GDH_FAST_MODEL", cfg.provider.fast_model or "") or None
@@ -132,8 +147,7 @@ class LLMClient:
                 async with httpx.AsyncClient(timeout=self.provider.timeout_seconds) as client:
                     r = await client.post(endpoint, headers=headers, json=payload)
                     r.raise_for_status()
-                    data = r.json()
-                    return data["choices"][0]["message"]["content"]
+                    return r.json()["choices"][0]["message"]["content"]
             except Exception as exc:
                 last = exc
                 if attempt < self.provider.max_retries:
@@ -159,7 +173,7 @@ class Workspace:
         return path
 
     def list_files(self, max_files: int = 250) -> list[str]:
-        excluded = {".git", ".venv", "__pycache__", "Library", "Temp", "Builds", "Saved", "Intermediate", "Binaries", "node_modules"}
+        excluded = {".git", ".venv", "__pycache__", "Library", "Temp", "Builds", "Saved", "Intermediate", "Binaries", "node_modules", "archive"}
         found: list[str] = []
         for p in self.root.rglob("*"):
             if len(found) >= max_files:
@@ -170,56 +184,19 @@ class Workspace:
         return sorted(found)
 
 
-class ProjectMemory:
-    def __init__(self, workspace: Workspace):
-        self.workspace = workspace
-        self.root = workspace.resolve(".harness/memory")
-        self.runs = workspace.resolve(".harness/runs")
-        self.root.mkdir(parents=True, exist_ok=True)
-        self.runs.mkdir(parents=True, exist_ok=True)
-
-    def ensure(self, project_name: str, engine_profile: str) -> None:
-        defaults = {
-            "project_brief.md": f"# {project_name}\n\nEngine profile: `{engine_profile}`\n\n## Vision\n\nTBD\n",
-            "constraints.md": "# Constraints\n\n- BYOK: secrets stay local in `.env`.\n- Prefer small validated milestones over giant rewrites.\n",
-            "backlog.md": "# Backlog\n\n## Now\n\n- Define the first playable slice.\n",
-            "decisions.md": "# Architecture Decision Records\n\n",
-            "qa_log.md": "# QA Log\n\n",
-        }
-        for name, body in defaults.items():
-            p = self.root / name
-            if not p.exists():
-                p.write_text(body, encoding="utf-8")
-
-    def context(self, max_chars: int = 80000) -> str:
-        chunks = []
-        for p in sorted(self.root.glob("*.md")):
-            chunks.append(f"\n\n--- {p.name} ---\n{p.read_text(encoding='utf-8', errors='replace')}")
-        return "".join(chunks)[-max_chars:]
-
-    def append_note(self, file_name: str, heading: str, body: str) -> Path:
-        p = self.root / file_name
-        with p.open("a", encoding="utf-8") as f:
-            f.write(f"\n\n## {heading}\n\n{body.strip()}\n")
-        return p
-
-    def save_run(self, name: str, data: dict[str, Any]) -> Path:
-        stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
-        p = self.runs / f"{stamp}-{name}.json"
-        p.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        return p
-
-
 class SwarmRunner:
     def __init__(self, workspace: Workspace, cfg: HarnessConfig):
         self.workspace = workspace
         self.cfg = cfg
-        self.memory = ProjectMemory(workspace)
+        self.memory = AdvancedProjectMemory(workspace)
         self.client = LLMClient(cfg.provider)
 
     async def run(self, prompt: str, swarm: str) -> dict[str, Any]:
         self.memory.ensure(self.cfg.project_name, self.cfg.engine_profile)
-        context = self.memory.context(self.cfg.memory_token_budget)
+        if self.cfg.auto_compress_memory and self.memory.needs_compression(self.cfg.compression_trigger_chars):
+            console.print("[yellow]Memory is large; running automatic compression before the swarm...[/]")
+            await self.memory.compress(self.client, "automatic pre-swarm compression", self.cfg.compression_keep_recent_runs)
+        context = self.memory.context_bundle(prompt, self.cfg.memory_token_budget * 4, self.cfg.retrieval_max_chunks, self.cfg.recent_run_context_count)
         files = "\n".join(self.workspace.list_files())
         roles = roles_for_swarm(swarm)
         console.print(f"Agents: {', '.join(r.name for r in roles)}")
@@ -229,34 +206,37 @@ class SwarmRunner:
             async with sem:
                 console.print(f"[cyan]Running {role.name}...[/]")
                 text = await self.client.chat([
-                    {"role": "system", "content": role_prompt(role, self.cfg.engine_profile)},
-                    {"role": "user", "content": f"User request:\n{prompt}\n\nProject memory:\n{context}\n\nWorkspace files:\n{files}\n\nReturn key decisions, risks, next actions, and acceptance checks."},
+                    {"role": "system", "content": role_prompt(role, self.cfg.engine_profile, self.cfg.strict_grounding)},
+                    {"role": "user", "content": f"User request:\n{prompt}\n\n{context}\n\nWorkspace files:\n{files}\n\nReturn key decisions, confirmed facts, assumptions, risks, next actions, acceptance checks, and memory updates that should be pinned."},
                 ], temperature=0.25)
                 return role.name, text
 
         outputs = dict(await asyncio.gather(*(run_role(r) for r in roles)))
         packed = "\n\n".join(f"## {k}\n{v}" for k, v in outputs.items())
         synthesis = await self.client.chat([
-            {"role": "system", "content": "You are the Director synthesizing a multi-agent game-development swarm. Create one cohesive milestone plan for a non-programmer. Include exact next actions and Windows commands when relevant."},
-            {"role": "user", "content": f"Original request:\n{prompt}\n\nMemory:\n{context}\n\nFiles:\n{files}\n\nSub-agent outputs:\n{packed}"},
-        ])
-        record = {"prompt": prompt, "swarm": swarm, "roles": [asdict(r) for r in roles], "role_outputs": outputs, "synthesis": synthesis}
+            {"role": "system", "content": "You are the Director synthesizing a multi-agent game-development swarm. Create one cohesive milestone plan for a non-programmer. Separate confirmed memory from assumptions."},
+            {"role": "user", "content": f"Original request:\n{prompt}\n\n{context}\n\nWorkspace files:\n{files}\n\nSub-agent outputs:\n{packed}\n\nSynthesize a grounded plan. Do not claim implementation happened unless this run actually wrote files."},
+        ], temperature=0.2)
+        audit = await self.memory.audit_synthesis(self.client, prompt, synthesis, context) if self.cfg.hallucination_audit else ""
+        record = {"prompt": prompt, "swarm": swarm, "roles": [asdict(r) for r in roles], "context_chars": len(context), "role_outputs": outputs, "synthesis": synthesis, "memory_audit": audit}
         self.memory.save_run("swarm", record)
         self.memory.append_note("backlog.md", "Swarm synthesis", synthesis)
+        if audit:
+            self.memory.append_note("qa_log.md", "Memory audit summary", audit)
         return record
 
 
 def scaffold_profile(ws: Workspace, profile: str, project_name: str) -> list[Path]:
     created = [ws.write("DESIGN_BRIEF.md", f"# {project_name} Design Brief\n\nEngine profile: `{profile}`\n\n## First playable\n\nTBD\n")]
     if profile == "gba":
-        created.append(ws.write("source/main.c", "#include <gba.h>\n#include <stdio.h>\nint main(void){ irqInit(); irqEnable(IRQ_VBLANK); consoleDemoInit(); iprintf(\"Game Dev Harness\\n\"); while(1){ VBlankIntrWait(); } }\n"))
+        created.append(ws.write("source/main.c", '#include <gba.h>\n#include <stdio.h>\nint main(void){ irqInit(); irqEnable(IRQ_VBLANK); consoleDemoInit(); iprintf("Game Dev Harness\\n"); while(1){ VBlankIntrWait(); } }\n'))
         created.append(ws.write("Makefile", "# Requires devkitPro/devkitARM. Replace with a full devkitARM Makefile as the project grows.\n"))
     elif profile == "unity":
-        created.append(ws.write("Assets/Scripts/GameBootstrap.cs", "using UnityEngine;\npublic class GameBootstrap : MonoBehaviour { void Start(){ Debug.Log(\"Harness bootstrap loaded\"); } }\n"))
-        created.append(ws.write("Assets/Editor/BuildCommand.cs", "#if UNITY_EDITOR\nusing UnityEditor;\npublic static class BuildCommand { public static void BuildWindows(){ BuildPipeline.BuildPlayer(new[]{\"Assets/Scenes/Main.unity\"}, \"Builds/Windows/Game.exe\", BuildTarget.StandaloneWindows64, BuildOptions.None); } }\n#endif\n"))
+        created.append(ws.write("Assets/Scripts/GameBootstrap.cs", 'using UnityEngine;\npublic class GameBootstrap : MonoBehaviour { void Start(){ Debug.Log("Harness bootstrap loaded"); } }\n'))
+        created.append(ws.write("Assets/Editor/BuildCommand.cs", '#if UNITY_EDITOR\nusing UnityEditor;\npublic static class BuildCommand { public static void BuildWindows(){ BuildPipeline.BuildPlayer(new[]{"Assets/Scenes/Main.unity"}, "Builds/Windows/Game.exe", BuildTarget.StandaloneWindows64, BuildOptions.None); } }\n#endif\n'))
     elif profile == "unreal":
         safe = "".join(c for c in project_name if c.isalnum()) or "HarnessGame"
-        created.append(ws.write(f"{safe}.uproject", "{\n  \"FileVersion\": 3,\n  \"EngineAssociation\": \"5.0\",\n  \"Category\": \"Games\",\n  \"Description\": \"Generated by Game Dev Harness BYOK\"\n}\n"))
+        created.append(ws.write(f"{safe}.uproject", '{\n  "FileVersion": 3,\n  "EngineAssociation": "5.0",\n  "Category": "Games",\n  "Description": "Generated by Game Dev Harness BYOK"\n}\n'))
     elif profile == "webapp":
         created.append(ws.write("app/index.html", "<!doctype html><title>Harness App</title><div id='app'></div><script src='main.js'></script>\n"))
         created.append(ws.write("app/main.js", "document.getElementById('app').textContent = 'First playable placeholder';\n"))
@@ -270,10 +250,9 @@ def init(project_dir: Path = typer.Option(Path("."), "--project-dir", "-p"), pro
     if engine_profile not in ENGINE_PROFILES:
         raise typer.BadParameter(f"Choose one of: {', '.join(sorted(ENGINE_PROFILES))}")
     cfg = HarnessConfig(provider=ProviderConfig(base_url=base_url.rstrip('/'), model=model, fast_model=fast_model), project_name=project_name, engine_profile=engine_profile)
-    project_dir.mkdir(parents=True, exist_ok=True)
     path = save_config(project_dir, cfg)
     ws = Workspace(project_dir)
-    ProjectMemory(ws).ensure(project_name, engine_profile)
+    AdvancedProjectMemory(ws).ensure(project_name, engine_profile)
     made = scaffold_profile(ws, engine_profile, project_name) if scaffold else []
     console.print(f"[green]Initialized:[/] {path}")
     console.print("Put your key in a local .env file as GDH_API_KEY=...")
@@ -285,8 +264,7 @@ def init(project_dir: Path = typer.Option(Path("."), "--project-dir", "-p"), pro
 def doctor() -> None:
     table = Table(title="Game Dev Harness Doctor")
     table.add_column("Check"); table.add_column("Status"); table.add_column("Detail")
-    checks = [("Python", "python", ["python", "--version"]), ("Git", "git", ["git", "--version"])]
-    for name, exe, cmd in checks:
+    for name, exe, cmd in [("Python", "python", ["python", "--version"]), ("Git", "git", ["git", "--version"])]:
         found = shutil.which(exe)
         detail = "Install it" if not found else subprocess.run(cmd, capture_output=True, text=True, timeout=15).stdout.strip()
         table.add_row(name, "OK" if found else "Missing", detail)
@@ -299,25 +277,70 @@ def doctor() -> None:
 @app.command()
 def start(prompt: str, project_dir: Path = typer.Option(Path("."), "--project-dir", "-p"), swarm: Optional[str] = typer.Option(None, "--swarm")) -> None:
     cfg = load_config(project_dir)
-    runner = SwarmRunner(Workspace(project_dir), cfg)
-    record = asyncio.run(runner.run(prompt, swarm or cfg.default_swarm))
-    console.rule("Director Synthesis")
-    console.print(record["synthesis"])
+    record = asyncio.run(SwarmRunner(Workspace(project_dir), cfg).run(prompt, swarm or cfg.default_swarm))
+    console.rule("Director Synthesis"); console.print(record["synthesis"])
+    if record.get("memory_audit"):
+        console.rule("Memory Audit"); console.print(record["memory_audit"])
 
 
 @app.command()
 def resume(project_dir: Path = typer.Option(Path("."), "--project-dir", "-p")) -> None:
     cfg = load_config(project_dir)
-    ws = Workspace(project_dir)
-    mem = ProjectMemory(ws)
-    mem.ensure(cfg.project_name, cfg.engine_profile)
+    mem = AdvancedProjectMemory(Workspace(project_dir)); mem.ensure(cfg.project_name, cfg.engine_profile)
     console.print(mem.context())
 
 
 @app.command("add-note")
 def add_note(file_name: str, heading: str, body: str, project_dir: Path = typer.Option(Path("."), "--project-dir", "-p")) -> None:
-    p = ProjectMemory(Workspace(project_dir)).append_note(file_name, heading, body)
+    p = AdvancedProjectMemory(Workspace(project_dir)).append_note(file_name, heading, body)
     console.print(f"[green]Updated[/] {p}")
+
+
+@app.command("pin-fact")
+def pin_fact(heading: str, body: str, project_dir: Path = typer.Option(Path("."), "--project-dir", "-p")) -> None:
+    cfg = load_config(project_dir)
+    mem = AdvancedProjectMemory(Workspace(project_dir)); mem.ensure(cfg.project_name, cfg.engine_profile)
+    console.print(f"[green]Pinned[/] {mem.append_note('pinned_facts.md', heading, body)}")
+
+
+@app.command("memory-status")
+def memory_status(project_dir: Path = typer.Option(Path("."), "--project-dir", "-p")) -> None:
+    cfg = load_config(project_dir)
+    mem = AdvancedProjectMemory(Workspace(project_dir)); mem.ensure(cfg.project_name, cfg.engine_profile)
+    table = Table(title="Memory Status"); table.add_column("Metric"); table.add_column("Value")
+    for k, v in mem.status(cfg.compression_trigger_chars).items():
+        table.add_row(k, str(v))
+    console.print(table)
+
+
+@app.command("memory-search")
+def memory_search(query: str, project_dir: Path = typer.Option(Path("."), "--project-dir", "-p"), limit: int = typer.Option(8, "--limit", "-n")) -> None:
+    cfg = load_config(project_dir)
+    mem = AdvancedProjectMemory(Workspace(project_dir)); mem.ensure(cfg.project_name, cfg.engine_profile)
+    for chunk in mem.retrieve(query, limit):
+        console.rule(f"{chunk.source} :: {chunk.heading} :: score {chunk.score:.2f}")
+        console.print(chunk.text[:2000])
+
+
+@app.command("memory-compress")
+def memory_compress(reason: str = typer.Option("manual compression", "--reason"), project_dir: Path = typer.Option(Path("."), "--project-dir", "-p")) -> None:
+    cfg = load_config(project_dir)
+    runner = SwarmRunner(Workspace(project_dir), cfg)
+    snapshot = asyncio.run(runner.memory.compress(runner.client, reason, cfg.compression_keep_recent_runs))
+    console.rule("Compressed Memory Snapshot"); console.print(snapshot)
+
+
+@app.command("memory-rebuild-index")
+def memory_rebuild_index(project_dir: Path = typer.Option(Path("."), "--project-dir", "-p")) -> None:
+    cfg = load_config(project_dir)
+    mem = AdvancedProjectMemory(Workspace(project_dir)); mem.ensure(cfg.project_name, cfg.engine_profile)
+    console.print(f"[green]Rebuilt memory index[/] with {mem.rebuild_index()} chunks.")
+
+
+@app.command("ui")
+def ui() -> None:
+    from .desktop_app import main
+    main()
 
 
 if __name__ == "__main__":
