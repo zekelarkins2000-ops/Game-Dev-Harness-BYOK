@@ -2,11 +2,11 @@
 
 A Windows 11 friendly, bring-your-own-key AI agent harness for long-form game and app development.
 
-This repo is designed for solo creators who want to drive projects through prompts while the harness keeps durable project memory, specialist sub-agents, engine-specific setup notes, repeatable build commands, and QA checkpoints.
+This repo is designed for solo creators who want to drive projects through prompts while the harness keeps durable project memory, specialist sub-agents, engine-specific setup notes, repeatable build commands, QA checkpoints, and automatic anti-hallucination memory compression.
 
 ## What it is
 
-Game Dev Harness BYOK is a Python CLI that talks to any OpenAI-compatible `/chat/completions` provider using your own API key and base URL. It coordinates a swarm of specialist sub-agents:
+Game Dev Harness BYOK is a Python desktop app and CLI that talks to any OpenAI-compatible `/chat/completions` provider using your own API key and base URL. It coordinates a swarm of specialist sub-agents:
 
 - Director
 - Producer
@@ -18,8 +18,59 @@ Game Dev Harness BYOK is a Python CLI that talks to any OpenAI-compatible `/chat
 - QA Analyst
 - Build Engineer
 - Researcher
+- Memory Auditor
 
-The goal is not one giant magical prompt. The goal is to make large projects survivable by splitting work into small, validated milestones with persistent memory.
+The goal is not one giant magical prompt. The goal is to make large projects survivable by splitting work into small, validated milestones with persistent memory, retrieval, compression, and grounding audits.
+
+## Desktop app
+
+Launch the polished Windows UI after setup with either command:
+
+```powershell
+gdh-desktop
+```
+
+or:
+
+```powershell
+gdh ui
+```
+
+The desktop app lets you enter your API key, base URL, model, fast model, project folder, engine profile, and swarm. It includes a large mission prompt box, output panel, memory status, manual compression, project initialization, folder opening, and local UI customization.
+
+Customizable UI options:
+
+- Dark, Light, or System appearance
+- Blue, Violet, Emerald, Orange, Rose, or Slate accent color
+- 90%, 100%, 110%, or 120% font scale
+
+UI settings are stored locally in `%APPDATA%\GameDevHarnessBYOK\desktop_settings.json`. Provider secrets are written only to the selected project’s local `.env`, which is ignored by Git.
+
+## Advanced memory system
+
+The harness now uses layered memory instead of simple “last N characters” context.
+
+| Layer | Purpose |
+| --- | --- |
+| Anchors | never-compress project identity and hard rules |
+| Pinned facts | durable user-confirmed facts |
+| Compressed canonical summary | rolling source of truth for long projects |
+| Markdown memory | backlog, decisions, constraints, QA, contradictions |
+| Run records | recent swarm history |
+| Retrieval index | prompt-relevant memory chunks |
+| Memory audit | hallucination and drift checks |
+
+Every swarm run receives a Grounded Context Bundle that separates confirmed memory, retrieved context, recent run history, assumptions, and contradictions.
+
+Useful commands:
+
+```powershell
+gdh memory-status
+gdh memory-search "combat system"
+gdh memory-compress --reason "before a major milestone"
+gdh memory-rebuild-index
+gdh pin-fact "Combat scope" "The first playable uses turn-based combat only."
+```
 
 ## Supported project profiles
 
@@ -38,11 +89,13 @@ The harness can plan for any engine, but local building still requires the relev
 
 General AI coding apps often struggle with huge solo game projects because they lose context, over-edit too much at once, or skip build validation. This harness is built around:
 
-1. Durable memory in `.harness/memory`.
-2. Sub-agent swarms for design, architecture, engineering, QA, build, and UX.
-3. Milestone-based execution instead of endless one-shot code generation.
-4. BYOK provider config so you can choose your model, key, and base URL.
-5. Windows-first setup with PowerShell scripts and engine doctor checks.
+1. Durable layered memory in `.harness/memory`.
+2. Automatic compression with pinned facts and anchors.
+3. Retrieval-scored context bundles.
+4. Sub-agent swarms for design, architecture, engineering, QA, build, UX, and memory auditing.
+5. Milestone-based execution instead of endless one-shot code generation.
+6. BYOK provider config so you can choose your model, key, and base URL.
+7. Windows-first setup with PowerShell scripts, desktop UI, and engine doctor checks.
 
 ## Windows 11 setup
 
@@ -79,9 +132,21 @@ python -m pip install --upgrade pip
 pip install -e .[dev]
 ```
 
-### 4. Add your key and provider
+### 4. Launch the desktop app
 
-Copy `.env.example` to `.env`:
+```powershell
+gdh-desktop
+```
+
+or:
+
+```powershell
+.\scripts\run_desktop_app.bat
+```
+
+### 5. Add your key and provider
+
+You can do this in the desktop app, or manually copy `.env.example` to `.env`:
 
 ```powershell
 copy .env.example .env
@@ -99,13 +164,13 @@ GDH_FAST_MODEL=your-cheaper-model-if-any
 
 `.env` is ignored by Git.
 
-### 5. Check your machine
+### 6. Check your machine
 
 ```powershell
 gdh doctor
 ```
 
-### 6. Initialize a game/app workspace
+### 7. Initialize a game/app workspace
 
 ```powershell
 gdh init --name "My Dream Game" --profile unity --base-url "https://api.openai.com/v1" --model "gpt-5.5"
@@ -123,7 +188,7 @@ For Unreal:
 gdh init --name "Large Scale Shooter" --profile unreal
 ```
 
-### 7. Run the agent swarm
+### 8. Run the agent swarm
 
 ```powershell
 gdh start "Create the first playable milestone for a tactical 4v4 esports manager game with a simulated live match viewer." --swarm studio
@@ -141,10 +206,12 @@ Use this loop:
 
 1. Prompt for a milestone, not the whole game.
 2. Let the swarm create a plan and acceptance checks.
-3. Ask it to implement only the next work package.
-4. Run the build/test command.
-5. Paste failures back into `gdh start`.
-6. Keep going.
+3. Pin durable facts with `gdh pin-fact`.
+4. Ask it to implement only the next work package.
+5. Run the build/test command.
+6. Paste failures back into `gdh start`.
+7. Compress memory before major shifts or when `gdh memory-status` recommends it.
+8. Keep going.
 
 Useful commands:
 
@@ -166,7 +233,7 @@ gdh start "Continue from memory. Implement the next smallest task and include ex
 ## Repository structure
 
 ```text
-game_dev_harness/       Python package
+game_dev_harness/       Python package, CLI, memory system, desktop UI
 docs/                   Architecture and usage documentation
 scripts/                Windows helpers
 examples/prompts/       Starter prompts
