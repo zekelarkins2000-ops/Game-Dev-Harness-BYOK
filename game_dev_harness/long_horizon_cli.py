@@ -32,6 +32,12 @@ def print_json(data: Any) -> None:
     console.print(json.dumps(data, indent=2, ensure_ascii=False))
 
 
+def safe_default_command(profile: str) -> str | None:
+    if profile.lower() == "webapp":
+        return "python -c \"from pathlib import Path; assert Path('app/index.html').exists(); assert Path('app/main.js').exists(); print('webapp files OK')\""
+    return None
+
+
 @app.command("doctor-profile")
 def doctor_profile(profile: Optional[str] = None, project_dir: Path = typer.Option(Path("."), "--project-dir", "-p")) -> None:
     cfg = load_config(project_dir)
@@ -48,7 +54,8 @@ def doctor_profile(profile: Optional[str] = None, project_dir: Path = typer.Opti
 @app.command("build-run")
 def build_run(command: Optional[str] = None, timeout: int = 1800, project_dir: Path = typer.Option(Path("."), "--project-dir", "-p")) -> None:
     cfg = load_config(project_dir)
-    print_json(BuildRunner(project_dir).run_profile(cfg.engine_profile, command, timeout))
+    effective_command = command or safe_default_command(cfg.engine_profile)
+    print_json(BuildRunner(project_dir).run_profile(cfg.engine_profile, effective_command, timeout))
 
 
 @app.command("run-command")
