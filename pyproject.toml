@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "game-dev-harness-byok"
-version = "0.3.0"
+version = "0.3.1"
 description = "A Windows 11 BYOK multi-agent harness for long-form game and app development."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -26,6 +26,7 @@ dev = ["pytest>=8.2.0", "ruff>=0.5.0"]
 [project.scripts]
 gdh = "game_dev_harness.cli:app"
 gdh-desktop = "game_dev_harness.desktop_app:main"
+gdh-dashboard = "game_dev_harness.desktop_dashboard:main"
 gdh-long = "game_dev_harness.long_horizon_cli:app"
 
 [tool.setuptools.packages.find]
