@@ -36,6 +36,12 @@ or:
 gdh ui
 ```
 
+Launch the long-horizon dashboard with:
+
+```powershell
+gdh-dashboard
+```
+
 The desktop app lets you enter your API key, base URL, model, fast model, project folder, engine profile, and swarm. It includes a large mission prompt box, output panel, memory status, manual compression, project initialization, folder opening, and local UI customization.
 
 Customizable UI options:
@@ -45,6 +51,34 @@ Customizable UI options:
 - 90%, 100%, 110%, or 120% font scale
 
 UI settings are stored locally in `%APPDATA%\GameDevHarnessBYOK\desktop_settings.json`. Provider secrets are written only to the selected project’s local `.env`, which is ignored by Git.
+
+## Package it like a normal Windows desktop app
+
+You can build Game Dev Harness BYOK into a desktop executable folder or Windows installer.
+
+Portable app folder:
+
+```powershell
+.\scripts\build_desktop_app.ps1
+```
+
+Installer build, if Inno Setup is installed:
+
+```powershell
+.\scripts\build_installer.ps1
+```
+
+Direct packaging commands:
+
+```powershell
+gdh-package portable
+gdh-package portable --onefile
+gdh-package shortcut --exe .\packaging\out\dist\GameDevHarness\GameDevHarness.exe
+gdh-package installer
+gdh-package all
+```
+
+See `docs/PACKAGING_WINDOWS_APP.md` for full packaging instructions.
 
 ## Advanced memory system
 
@@ -95,7 +129,7 @@ General AI coding apps often struggle with huge solo game projects because they 
 4. Sub-agent swarms for design, architecture, engineering, QA, build, UX, and memory auditing.
 5. Milestone-based execution instead of endless one-shot code generation.
 6. BYOK provider config so you can choose your model, key, and base URL.
-7. Windows-first setup with PowerShell scripts, desktop UI, and engine doctor checks.
+7. Windows-first setup with PowerShell scripts, desktop UI, dashboard, and engine doctor checks.
 
 ## Windows 11 setup
 
@@ -200,6 +234,18 @@ For a GBA-focused swarm:
 gdh start "Make a top-down monster catching RPG first playable for GBA with original region, original characters, and placeholder sprites." --swarm gba
 ```
 
+## Long-horizon toolkit
+
+```powershell
+gdh-long roadmap-add-epic "First Playable"
+gdh-long roadmap-add-milestone "Vertical Slice"
+gdh-long roadmap-add-task "Add player movement" --acceptance "Player moves; Build succeeds; QA notes recorded"
+gdh-long build-run
+gdh-long docs-generate
+```
+
+See `docs/LONG_HORIZON_DEVELOPMENT.md` for the full workflow.
+
 ## How to use it for very large projects
 
 Use this loop:
@@ -233,9 +279,10 @@ gdh start "Continue from memory. Implement the next smallest task and include ex
 ## Repository structure
 
 ```text
-game_dev_harness/       Python package, CLI, memory system, desktop UI
+game_dev_harness/       Python package, CLI, memory system, desktop UI, dashboard, packaging
 docs/                   Architecture and usage documentation
-scripts/                Windows helpers
+scripts/                Windows helpers and build scripts
+packaging/              Installer, shortcut, and PyInstaller helper files
 examples/prompts/       Starter prompts
 ```
 
