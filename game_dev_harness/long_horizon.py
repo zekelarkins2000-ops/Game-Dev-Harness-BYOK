@@ -3,7 +3,6 @@ from __future__ import annotations
 import datetime as dt
 import fnmatch
 import json
-import math
 import os
 import shutil
 import subprocess
@@ -269,9 +268,9 @@ class BuildRunner(CommandRunner):
         if profile == "gba":
             return "make"
         if profile == "webapp":
-            return "python -m http.server 8000 --directory app"
+            return "python -m py_compile app/main.js"
         if profile == "desktop":
-            return "python app.py"
+            return "python -m py_compile app.py"
         return None
 
     def run_profile(self, profile: str, command: str | None = None, timeout: int = 1800) -> dict[str, Any]:
