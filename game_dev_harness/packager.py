@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import shutil
 import subprocess
 import sys
@@ -11,7 +10,6 @@ from rich.console import Console
 
 app = typer.Typer(help="Package Game Dev Harness BYOK as a Windows desktop application.")
 console = Console()
-APP_NAME = "Game Dev Harness BYOK"
 EXE_NAME = "GameDevHarness"
 DASHBOARD_EXE_NAME = "GameDevHarnessDashboard"
 
@@ -49,7 +47,7 @@ def run(cmd: list[str], cwd: Path) -> None:
     subprocess.run(cmd, cwd=cwd, check=True)
 
 
-def pyinstaller_args(entry: str, name: str, icon: Path, out: Path, onefile: bool) -> list[str]:
+def pyinstaller_args(entry: Path, name: str, icon: Path, out: Path, onefile: bool) -> list[str]:
     args = [
         sys.executable,
         "-m",
@@ -71,7 +69,7 @@ def pyinstaller_args(entry: str, name: str, icon: Path, out: Path, onefile: bool
         "customtkinter",
         "--hidden-import",
         "PIL._tkinter_finder",
-        entry,
+        str(entry),
     ]
     if onefile:
         args.insert(6, "--onefile")
@@ -89,11 +87,9 @@ def build_portable(
     icon = ensure_icon(root / "packaging" / "assets" / "game-dev-harness.ico")
     out.mkdir(parents=True, exist_ok=True)
 
-    main_entry = root / "game_dev_harness" / "desktop_app.py"
-    run(pyinstaller_args(str(main_entry), EXE_NAME, icon, out, onefile), root)
+    run(pyinstaller_args(root / "packaging" / "desktop_main.py", EXE_NAME, icon, out, onefile), root)
     if dashboard:
-        dash_entry = root / "game_dev_harness" / "desktop_dashboard.py"
-        run(pyinstaller_args(str(dash_entry), DASHBOARD_EXE_NAME, icon, out, onefile), root)
+        run(pyinstaller_args(root / "packaging" / "dashboard_main.py", DASHBOARD_EXE_NAME, icon, out, onefile), root)
 
     console.print(f"[green]Portable build complete:[/] {out / 'dist'}")
 
@@ -131,8 +127,7 @@ def build_installer() -> None:
     iscc = shutil.which("ISCC.exe") or shutil.which("ISCC")
     if not iscc:
         raise RuntimeError("Inno Setup compiler not found. Install Inno Setup or use gdh-package portable.")
-    iss = root / "packaging" / "windows_installer.iss"
-    run([iscc, str(iss)], root)
+    run([iscc, str(root / "packaging" / "windows_installer.iss")], root)
     console.print(f"[green]Installer output:[/] {root / 'packaging' / 'out' / 'installer'}")
 
 
