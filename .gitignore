@@ -12,6 +12,7 @@ htmlcov/
 dist/
 build/
 *.egg-info/
+*.spec
 
 # Virtual environments
 .venv/
@@ -27,6 +28,15 @@ env/
 logs/
 runs/
 artifacts/
+
+# Packaging outputs
+packaging/out/
+packaging/build/
+packaging/spec/
+packaging/*.log
+packaging/assets/*.ico
+*.exe
+*.msi
 
 # Windows / IDE
 Thumbs.db
