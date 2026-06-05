@@ -15,7 +15,6 @@ from .long_horizon import (
     BuildRunner,
     DocsGenerator,
     KnowledgeManager,
-    PluginRegistry,
     ProfileDoctor,
     RoadmapManager,
     SnapshotManager,
